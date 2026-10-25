@@ -1,0 +1,93 @@
+// SP schema (spec §6), managed by Prisma Migrate.
+//
+// Prisma is used ONLY for schema + migrations. Application code queries with
+// plain `pg` and hand-written SQL so every query stays visible to the learner.
+//
+// The SP does not own identities: it learns about users from the IdP's
+// Assertions and keeps just enough state to run its own sessions and to
+// defend the ACS endpoint against replays.
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// JIT ("just-in-time") provisioned on first successful SAML login.
+/// Identified by (which IdP, which NameID) — never by email alone, because
+/// two IdPs could both assert "alice@corp.test".
+model User {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  idpEntityId String    @map("idp_entity_id")
+  nameId      String    @map("name_id")
+  email       String?
+  displayName String?   @map("display_name")
+  groups      Json      @default("[]") @db.JsonB
+  lastLoginAt DateTime? @map("last_login_at") @db.Timestamptz
+
+  sessions Session[]
+
+  @@unique([idpEntityId, nameId])
+  @@map("users")
+}
+
+/// The SP's own login session. id is the sp_sid cookie value.
+/// session_index comes from the Assertion's AuthnStatement and is needed for
+/// Single Logout (phase 6).
+model Session {
+  id           String   @id
+  userId       String   @map("user_id") @db.Uuid
+  sessionIndex String?  @map("session_index")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  expiresAt    DateTime @map("expires_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+/// Every AuthnRequest we send. The IdP echoes the request ID back as
+/// InResponseTo; matching it here is how the ACS correlates a Response
+/// WITHOUT relying on any cookie (the POST to /saml/acs is cross-site, so
+/// SameSite=Lax cookies are not sent — see README).
+model AuthnRequest {
+  /// The AuthnRequest/@ID.
+  id         String    @id
+  /// Opaque random key sent to the IdP as RelayState.
+  relayState String    @map("relay_state")
+  /// Relative path to land on after login (validated: no open redirect).
+  returnTo   String    @map("return_to")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  /// created_at + 5 minutes.
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz
+  /// Set once; a second use is a replay.
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz
+
+  @@map("authn_requests")
+}
+
+/// Replay cache: an Assertion ID is accepted at most once until it expires.
+model UsedAssertion {
+  assertionId String   @id @map("assertion_id")
+  expiresAt   DateTime @map("expires_at") @db.Timestamptz
+
+  @@map("used_assertions")
+}
+
+model AuditLog {
+  id      BigInt   @id @default(autoincrement())
+  ts      DateTime @default(now()) @db.Timestamptz
+  event   String
+  details Json     @default("{}") @db.JsonB
+
+  @@map("audit_log")
+}
+
+/// Lab only (LAB_DEBUG=true): decoded XML of the most recent SAMLResponse,
+/// shown on the SPA's /debug page. A single row (id = 1), overwritten each time.
+model DebugLastResponse {
+  id         Int      @id @default(1)
+  receivedAt DateTime @default(now()) @map("received_at") @db.Timestamptz
+  xml        String
+  checks     Json     @default("[]") @db.JsonB
+
+  @@map("debug_last_response")
+}

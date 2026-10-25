@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+shared/keys/*
+!shared/keys/.gitkeep
+shared/certs/*
+!shared/certs/.gitkeep

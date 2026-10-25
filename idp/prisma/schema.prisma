@@ -1,0 +1,107 @@
+// IdP schema (spec §6), managed by Prisma Migrate.
+//
+// Prisma is used ONLY for schema + migrations. Application code queries with
+// plain `pg` and hand-written SQL so every query stays visible to the learner.
+//
+// Workflow: edit this file, then run `npm run db:migrate:new -- <name>` against
+// a dev database to generate a new SQL migration in prisma/migrations/.
+// Containers apply pending migrations on start with `prisma migrate deploy`.
+//
+// The IdP is the source of truth for who people are: users, passwords,
+// groups, and the SSO session that lets a user skip the password next time.
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// People who can log in at the IdP.
+model User {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String   @unique
+  displayName  String   @map("display_name")
+  /// argon2id hash, never plaintext.
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  groups      UserGroup[]
+  ssoSessions SsoSession[]
+
+  @@map("users")
+}
+
+/// Groups become a SAML Attribute in the Assertion (e.g. groups = Finance).
+model Group {
+  id   String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name String @unique
+
+  members UserGroup[]
+
+  @@map("groups")
+}
+
+model UserGroup {
+  userId  String @map("user_id") @db.Uuid
+  groupId String @map("group_id") @db.Uuid
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([userId, groupId])
+  @@map("user_groups")
+}
+
+/// SPs this IdP trusts, loaded from each SP's metadata (phase 3).
+/// An AuthnRequest from an issuer not in this table is rejected, and responses
+/// are only ever POSTed to the registered acs_url — never to a URL the
+/// request merely asks for.
+model ServiceProvider {
+  entityId     String  @id @map("entity_id")
+  acsUrl       String  @map("acs_url")
+  sloUrl       String? @map("slo_url")
+  nameIdFormat String  @map("name_id_format")
+  displayName  String  @map("display_name")
+
+  sessionIndexes SpSessionIndex[]
+
+  @@map("service_providers")
+}
+
+/// The IdP's own login session ("SSO session"). id is the idp_sid cookie.
+/// While it is valid, the IdP answers further AuthnRequests without asking
+/// for a password again — the "single" in single sign-on.
+model SsoSession {
+  id           String   @id
+  userId       String   @map("user_id") @db.Uuid
+  /// Goes into AuthnStatement/@AuthnInstant.
+  authnInstant DateTime @map("authn_instant") @db.Timestamptz
+  expiresAt    DateTime @map("expires_at") @db.Timestamptz
+
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionIndexes SpSessionIndex[]
+
+  @@map("sso_sessions")
+}
+
+/// One row per Assertion issued to an SP. SessionIndex links an SP's session
+/// back to this IdP session so Single Logout (phase 6) knows whom to notify.
+model SpSessionIndex {
+  sessionIndex String @id @map("session_index")
+  ssoSessionId String @map("sso_session_id")
+  spEntityId   String @map("sp_entity_id")
+  nameId       String @map("name_id")
+
+  ssoSession SsoSession      @relation(fields: [ssoSessionId], references: [id], onDelete: Cascade)
+  sp         ServiceProvider @relation(fields: [spEntityId], references: [entityId], onDelete: Cascade)
+
+  @@map("sp_session_index")
+}
+
+/// Lab visibility: every interesting event lands here.
+model AuditLog {
+  id      BigInt   @id @default(autoincrement())
+  ts      DateTime @default(now()) @db.Timestamptz
+  event   String
+  details Json     @default("{}") @db.JsonB
+
+  @@map("audit_log")
+}

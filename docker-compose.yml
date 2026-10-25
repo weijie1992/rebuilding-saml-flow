@@ -1,0 +1,114 @@
+# SAML 2.0 Learning Lab
+#
+# Two independent "companies" share one laptop:
+#   - the IdP (identity provider)  -> http://127.0.0.1:4000
+#   - the SP  (service provider)   -> http://localhost:3000
+#
+# They deliberately use DIFFERENT HOSTNAMES. Cookies are scoped by host, not
+# port, so localhost:3000 and localhost:4000 would share (and clobber) each
+# other's cookies. 127.0.0.1 vs localhost also makes the login flow genuinely
+# cross-site, which is what you get in production.
+#
+# The two backends never talk to each other directly. Every SAML message is
+# carried by your browser.
+
+name: saml-lab
+
+services:
+  # One-shot job: generate the IdP signing key + self-signed certificate into
+  # ./shared/keys if they don't exist yet. Everything else waits for it.
+  keygen:
+    # Alpine with openssl preinstalled, so nothing is downloaded at run time.
+    image: alpine/openssl:3.5.4
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./shared/keys:/keys
+    entrypoint: ["/bin/sh", "/scripts/gen-keys.sh", "/keys"]
+    restart: "no"
+
+  idp-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: idp
+      POSTGRES_PASSWORD: idp
+      POSTGRES_DB: idp
+    # Published for DB clients on your machine (localhost only).
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - idp-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U idp -d idp"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  idp:
+    build:
+      context: ./idp
+      # Extra CA certs for the image build (see shared/certs, README).
+      additional_contexts:
+        certs: ./shared/certs
+    ports:
+      - "4000:4000"
+    environment:
+      PORT: 4000
+      # The URL the BROWSER uses. It ends up inside signed XML, so it must
+      # never be a Docker-internal hostname like http://idp:4000.
+      IDP_BASE_URL: ${IDP_BASE_URL:-http://127.0.0.1:4000}
+      DATABASE_URL: postgres://idp:idp@idp-db:5432/idp
+      LAB_DEBUG: ${LAB_DEBUG:-true}
+      KEYS_DIR: /shared/keys
+      METADATA_DIR: /shared/metadata
+    volumes:
+      - ./shared/keys:/shared/keys:ro
+      - ./shared/metadata:/shared/metadata:ro
+    depends_on:
+      keygen:
+        condition: service_completed_successfully
+      idp-db:
+        condition: service_healthy
+
+  sp-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: sp
+      POSTGRES_PASSWORD: sp
+      POSTGRES_DB: sp
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - sp-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sp -d sp"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  sp-api:
+    build:
+      context: ./sp
+      dockerfile: api/Dockerfile
+      additional_contexts:
+        certs: ./shared/certs
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      SP_BASE_URL: ${SP_BASE_URL:-http://localhost:3000}
+      IDP_BASE_URL: ${IDP_BASE_URL:-http://127.0.0.1:4000}
+      DATABASE_URL: postgres://sp:sp@sp-db:5432/sp
+      LAB_DEBUG: ${LAB_DEBUG:-true}
+      ALLOW_IDP_INITIATED: ${ALLOW_IDP_INITIATED:-false}
+      METADATA_DIR: /shared/metadata
+    volumes:
+      - ./shared/metadata:/shared/metadata:ro
+    depends_on:
+      keygen:
+        condition: service_completed_successfully
+      sp-db:
+        condition: service_healthy
+
+volumes:
+  idp-db-data:
+  sp-db-data:

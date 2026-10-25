@@ -1,0 +1,26 @@
+// SAML endpoints for the SP. Phase 1 only reserves the routes so the SPA's
+// "Log in with Company SSO" button lands somewhere meaningful.
+// Real implementations: metadata (phase 3), login + ACS (phase 4), SLO (phase 6).
+
+import { Router } from "express";
+
+export const samlRouter = Router();
+
+function notYet(phase: number, what: string) {
+  return (_req: unknown, res: import("express").Response) => {
+    res
+      .status(501)
+      .type("html")
+      .send(
+        `<!doctype html><meta charset="utf-8"><title>Not yet</title>
+<body style="font-family: system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem;">
+<h1>Not built yet</h1><p>${what} arrives in phase ${phase}.</p><p><a href="/">Back home</a></p></body>`,
+      );
+  };
+}
+
+samlRouter.get("/metadata", notYet(3, "SP metadata"));
+samlRouter.get("/login", notYet(4, "SP-initiated SSO (AuthnRequest via HTTP-Redirect)"));
+samlRouter.post("/acs", notYet(4, "The Assertion Consumer Service"));
+samlRouter.get("/logout", notYet(6, "Single Logout"));
+samlRouter.all("/slo", notYet(6, "Single Logout"));
