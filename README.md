@@ -119,5 +119,49 @@ gitignored, and an empty folder changes nothing.
 
 ---
 
-*Coming next:* Phase 2 — IdP login page, argon2 password check, SSO session
-cookie, `/apps` portal.
+## Phase 2 — IdP basics ✅
+
+The IdP can now sign people in. There's still no SAML: this phase builds the
+part of an IdP that exists *before* any SP is involved.
+
+| Piece | File | What to notice |
+| --- | --- | --- |
+| Password check | `idp/src/auth/password.ts` | argon2id verify; an unknown email still runs a dummy verify, so timing doesn't reveal which accounts exist |
+| SSO session | `idp/src/auth/sso-session.ts` | 256-bit random id stored in `sso_sessions` and in the `idp_sid` cookie (HttpOnly, SameSite=Lax, 8 h). `authn_instant` becomes the Assertion's `AuthnInstant` in phase 4 |
+| Login CSRF | `idp/src/auth/csrf.ts` | Double-submit cookie: the token sits in the `idp_csrf` cookie *and* in a hidden form field, and they must match |
+| Routes | `idp/src/routes/login.ts`, `routes/apps.ts` | `continueAfterLogin()` is where phase 4 will resume a pending AuthnRequest |
+| Views | `idp/src/views/*.ts` | Plain server-rendered HTML; every dynamic value goes through `escapeHtml()` |
+
+Security details worth reading in the code: one generic "Incorrect email or
+password" message (the precise reason only goes to `audit_log`), a fresh
+session id on every login (session-fixation defence), and a new CSRF token on
+every form render.
+
+### Verify it manually
+
+1. `docker compose up -d --build idp`
+2. Open http://127.0.0.1:4000 → redirected to `/apps` → redirected to `/login`.
+3. Sign in as `alice@corp.test` / `password123` → the portal shows *Hello,
+   Alice Anderson*, groups *Employees, Finance*, and "No apps registered yet"
+   (SPs arrive in phase 3).
+4. DevTools → Application → Cookies → `http://127.0.0.1:4000`: `idp_sid` is
+   HttpOnly, SameSite=Lax. Then open http://localhost:3000 and look at its
+   cookies: no `idp_sid`. Different host, different cookie jar.
+5. Visit `/login` again: you skip straight to `/apps`. That's the SSO session
+   at work, and in phase 4 it's what lets a second SP log you in without a
+   password.
+6. Try a wrong password, then an unknown email. The page says the same thing
+   for both; the audit log doesn't:
+   ```sh
+   docker compose exec idp-db psql -U idp -d idp -c \
+     "select ts, event, details from audit_log where event like 'log%' order by id"
+   ```
+7. **Sign out of the IdP** → back on `/login` with a notice, the
+   `sso_sessions` row is gone, and `/apps` redirects to `/login` again.
+8. CSRF: in DevTools, delete the `idp_csrf` cookie and submit the form →
+   *"Your sign-in form expired"* (403) and a `login.csrf_rejected` audit row.
+
+---
+
+*Coming next:* Phase 3 — both sides generate SAML metadata, an export script
+writes it to `shared/metadata`, and each side loads the other's.

@@ -42,4 +42,12 @@ export const config = {
   // SAML Metadata §2.3: the IdP's globally unique name. By convention it is
   // the URL where the IdP's metadata can be fetched.
   entityId: `${baseUrl}/metadata`,
+
+  // The IdP's own login session (the "SSO session"). While it lives, every
+  // SP that sends this browser here gets an answer without a password prompt.
+  ssoCookieName: "idp_sid",
+  ssoSessionTtlMs: 8 * 60 * 60 * 1000, // 8 hours
+
+  // CSRF token for the login form (double-submit cookie, see auth/csrf.ts).
+  csrfCookieName: "idp_csrf",
 } as const;

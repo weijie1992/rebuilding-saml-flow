@@ -1,20 +1,28 @@
 // IdP (Identity Provider) entry point.
 //
-// Phase 1: infrastructure only — seed users, expose /healthz.
-// Login (phase 2), metadata (phase 3) and SAML endpoints (phase 4+) come later.
+// Phase 1: seed users, expose /healthz.
+// Phase 2: login page, SSO session cookie, /apps portal (no SAML yet).
+// Metadata (phase 3) and SAML endpoints (phase 4+) come later.
 //
 // Schema migrations are NOT run here: the container runs
 // `prisma migrate deploy` before starting this process (see Dockerfile).
 
 import { existsSync } from "node:fs";
 import path from "node:path";
-import express from "express";
+import express, { type ErrorRequestHandler } from "express";
+import cookieParser from "cookie-parser";
 import { config } from "./config.ts";
 import { pool } from "./db/pool.ts";
 import { seed } from "./db/seed.ts";
 import { audit } from "./db/audit.ts";
+import { loginRouter } from "./routes/login.ts";
+import { appsRouter } from "./routes/apps.ts";
+import { errorView } from "./views/error.ts";
 
 const app = express();
+app.use(cookieParser());
+// HTML forms post application/x-www-form-urlencoded.
+app.use(express.urlencoded({ extended: false, limit: "20kb" }));
 
 // Liveness + readiness in one: is the database reachable, and is the signing
 // key (which keygen should have generated) actually mounted?
@@ -30,18 +38,20 @@ app.get("/healthz", async (_req, res) => {
   }
 });
 
-app.get("/", (_req, res) => {
-  res.type("html").send(`<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Corp IdP</title></head>
-<body style="font-family: system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem;">
-  <h1>Corp Identity Provider</h1>
-  <p>Phase 1: infrastructure is up. The login page arrives in phase 2.</p>
-  <p>Entity ID: <code>${config.entityId}</code></p>
-  <p><a href="/healthz">/healthz</a></p>
-</body>
-</html>`);
-});
+// The IdP has no home page of its own: send people to their portal, which
+// redirects to /login if they aren't signed in.
+app.get("/", (_req, res) => res.redirect(303, "/apps"));
+
+app.use(loginRouter);
+app.use(appsRouter);
+
+// Express 5 forwards errors thrown in async handlers here. Log the detail,
+// show the browser a generic page.
+const onError: ErrorRequestHandler = (err, req, res, _next) => {
+  console.error(`idp: ${req.method} ${req.path} failed`, err);
+  res.status(500).type("html").send(errorView("The identity provider hit an unexpected error."));
+};
+app.use(onError);
 
 async function main(): Promise<void> {
   await seed(pool);
