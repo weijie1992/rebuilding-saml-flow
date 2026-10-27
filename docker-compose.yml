@@ -96,7 +96,8 @@ services:
     environment:
       PORT: 3000
       SP_BASE_URL: ${SP_BASE_URL:-http://localhost:3000}
-      IDP_BASE_URL: ${IDP_BASE_URL:-http://127.0.0.1:4000}
+      # No IDP_BASE_URL here on purpose: the SP learns everything about its
+      # IdP from shared/metadata/idp-metadata.xml.
       DATABASE_URL: postgres://sp:sp@sp-db:5432/sp
       LAB_DEBUG: ${LAB_DEBUG:-true}
       ALLOW_IDP_INITIATED: ${ALLOW_IDP_INITIATED:-false}

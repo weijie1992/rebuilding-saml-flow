@@ -11,11 +11,13 @@
     "db:migrate:new": "prisma migrate dev --create-only --name"
   },
   "dependencies": {
+    "@xmldom/xmldom": "^0.9.12",
     "argon2": "^0.45.1",
     "cookie-parser": "^1.4.7",
     "express": "^5.3.0",
     "pg": "^8.23.1",
     "prisma": "^7.10.1",
+    "xpath": "^0.0.35",
     "zod": "^4.6.7"
   },
   "devDependencies": {

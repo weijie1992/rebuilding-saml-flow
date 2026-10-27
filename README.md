@@ -13,7 +13,8 @@ read every step.
 ## Quick start
 
 ```sh
-docker compose up --build
+docker compose up -d --build
+./scripts/export-metadata.sh   # first run only: IdP and SP swap metadata, then restart
 ```
 
 Seeded IdP users (**lab only — never reuse this password anywhere**):
@@ -163,5 +164,83 @@ every form render.
 
 ---
 
-*Coming next:* Phase 3 — both sides generate SAML metadata, an export script
-writes it to `shared/metadata`, and each side loads the other's.
+## Phase 3 — Metadata ✅
+
+Before anyone can log in, the IdP and SP must trust each other. SAML does
+that with **metadata**: each side publishes an XML "business card", and the
+other side imports it **out of band**. In real life an admin uploads it into
+Okta or Entra; here, a script does it.
+
+```
+              GET /metadata                          GET /saml/metadata
+   IdP  ───────────────────────►  export-metadata.sh  ◄───────────────────  SP
+    ▲      idp-metadata.xml  ──►  shared/metadata/  ◄── sp-metadata.xml      ▲
+    └──── reads sp-metadata.xml at startup        reads idp-metadata.xml ───┘
+```
+
+Neither app ever fetches the other's URL. They only read files, so no URL
+mix-ups between "inside Docker" and "in the browser" can happen (spec §3).
+
+| What | IdP | SP |
+| --- | --- | --- |
+| Builds its own metadata | `idp/src/saml/metadata.ts` `buildIdpMetadata()` | `sp/api/src/saml/metadata.ts` `buildSpMetadata()` |
+| Serves it at its entityID URL | `GET /metadata` | `GET /saml/metadata` |
+| Reads the other side's | `parseSpMetadata()` → `service_providers` row (`saml/sp-registry.ts`) | `parseIdpMetadata()` → in-memory `IdpTrust` (`saml/idp-trust.ts`) |
+| Safe XML parsing | `saml/xml.ts` `parseXmlSafely()` | same |
+
+**What each side takes from the other's metadata, and what it's for later:**
+
+- The **SP** learns the IdP's `entityID` (every Response's `Issuer` must match
+  it), its `SingleSignOnService` Redirect URL (where `/saml/login` will send
+  you), and its **signing certificate**. In phase 4 that certificate is the
+  *only* key the SP accepts signatures from, never one embedded in a Response.
+  The SP deliberately has no `IDP_BASE_URL` setting: switching IdP (Keycloak,
+  phase 7) means switching this file.
+- The **IdP** learns the SP's `entityID` (it becomes the Assertion's
+  `Audience`) and its `AssertionConsumerService` URL. The IdP will POST
+  Responses **only** to that registered URL, even if an AuthnRequest asks for
+  another one. Otherwise an attacker could request an Assertion for you and
+  have it delivered to their own server.
+
+**Safe parsing:** any `<!DOCTYPE` is rejected before parsing (blocks XXE and
+"billion laughs" entity attacks), and every parser warning is treated as fatal.
+Lookups use XPath on namespace URIs, so a document that uses different
+prefixes, or none, still parses correctly.
+
+### Verify it manually
+
+1. `docker compose up -d --build`. On a fresh setup the logs say
+   *"no SP metadata …"* (IdP) and *"no IdP metadata … SSO disabled"* (SP).
+2. Open both business cards in the browser:
+   http://127.0.0.1:4000/metadata and http://localhost:3000/saml/metadata.
+   Find the `entityID`, the endpoints, the `X509Certificate`, and
+   `WantAssertionsSigned="true"`.
+3. `./scripts/export-metadata.sh` → writes both files to `shared/metadata/` and
+   restarts the apps. Logs now say *"registered SP …"* and *"trusting IdP …
+   signing cert SHA-256 …"*.
+4. Compare fingerprints: these three must be identical.
+   ```sh
+   openssl x509 -in shared/keys/idp.crt -noout -fingerprint -sha256
+   curl -s http://127.0.0.1:4000/healthz   # signingCertSha256
+   curl -s http://localhost:3000/healthz   # idp.signingCertSha256
+   ```
+5. Sign in at http://127.0.0.1:4000: the portal now shows an **Acme App** tile.
+   Its name comes from the SP's metadata (`OrganizationDisplayName`). Clicking
+   it shows *"arrives in phase 5"*.
+6. `select * from service_providers` on the IdP database (port 5433): one row,
+   with the ACS URL taken from the SP's metadata.
+
+**If you regenerate the IdP key** (delete `shared/keys/*`, then restart
+`keygen`), rerun the export. Until you do, the SP still trusts the old
+certificate, and logins will fail signature checks in phase 4. That's a key
+rollover, in miniature. The metadata files are gitignored because they embed
+your machine's locally generated certificate.
+
+The metadata files were also checked against the official OASIS SAML metadata
+XSD with `xmllint --schema`, and both validate.
+
+---
+
+*Coming next:* Phase 4 — SP-initiated SSO: AuthnRequest via HTTP-Redirect →
+IdP login → signed Response via HTTP-POST → full SP validation (§8) → session
+→ dashboard.

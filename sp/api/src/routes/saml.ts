@@ -1,8 +1,9 @@
-// SAML endpoints for the SP. Phase 1 only reserves the routes so the SPA's
-// "Log in with Company SSO" button lands somewhere meaningful.
-// Real implementations: metadata (phase 3), login + ACS (phase 4), SLO (phase 6).
+// SAML endpoints for the SP.
+// Built: metadata (phase 3). Still placeholders: login + ACS (phase 4), SLO (phase 6).
 
 import { Router } from "express";
+import { config } from "../config.ts";
+import { buildSpMetadata } from "../saml/metadata.ts";
 
 export const samlRouter = Router();
 
@@ -19,7 +20,19 @@ function notYet(phase: number, what: string) {
   };
 }
 
-samlRouter.get("/metadata", notYet(3, "SP metadata"));
+// GET /saml/metadata — our metadata, at the URL that is also our entityID.
+// Fixed for the life of the process, so build it once.
+const metadataXml = buildSpMetadata({
+  entityId: config.entityId,
+  acsUrl: config.acsUrl,
+  sloUrl: config.sloUrl,
+  displayName: config.displayName,
+  baseUrl: config.baseUrl,
+});
+samlRouter.get("/metadata", (_req, res) => {
+  // The registered media type for SAML metadata (Metadata §4.1.1).
+  res.type("application/samlmetadata+xml").send(metadataXml);
+});
 samlRouter.get("/login", notYet(4, "SP-initiated SSO (AuthnRequest via HTTP-Redirect)"));
 samlRouter.post("/acs", notYet(4, "The Assertion Consumer Service"));
 samlRouter.get("/logout", notYet(6, "Single Logout"));

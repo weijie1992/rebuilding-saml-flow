@@ -4,6 +4,7 @@
 // The SPA never speaks SAML; only this backend does.
 //
 // Phase 1: /healthz, /api/me, local logout, and the SPA shell.
+// Phase 3: SP metadata at /saml/metadata; IdP trust loaded from its metadata file.
 //
 // Schema migrations are NOT run here: the container runs
 // `prisma migrate deploy` before starting this process (see api/Dockerfile).
@@ -16,6 +17,7 @@ import { pool } from "./db/pool.ts";
 import { audit } from "./db/audit.ts";
 import { apiRouter } from "./routes/api.ts";
 import { samlRouter } from "./routes/saml.ts";
+import { getIdpTrust, loadIdpTrust } from "./saml/idp-trust.ts";
 
 const app = express();
 app.use(cookieParser());
@@ -23,7 +25,21 @@ app.use(cookieParser());
 app.get("/healthz", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
-    res.json({ status: "ok", service: "sp-api", db: "ok", entityId: config.entityId, acsUrl: config.acsUrl });
+    const idp = getIdpTrust();
+    res.json({
+      status: "ok",
+      service: "sp-api",
+      db: "ok",
+      entityId: config.entityId,
+      acsUrl: config.acsUrl,
+      idp: idp
+        ? {
+            entityId: idp.entityId,
+            ssoRedirectUrl: idp.ssoRedirectUrl,
+            signingCertSha256: idp.signingCertificates.map((c) => c.fingerprint256),
+          }
+        : null,
+    });
   } catch {
     res.status(503).json({ status: "error", service: "sp-api", db: "unreachable" });
   }
@@ -48,6 +64,9 @@ app.use((req, res, next) => {
 });
 
 async function main(): Promise<void> {
+  // A malformed metadata file throws here and stops startup: better than an
+  // SP that silently trusts the wrong thing. A MISSING file just disables SSO.
+  loadIdpTrust();
   await audit(pool, "sp.started", { baseUrl: config.baseUrl, entityId: config.entityId });
 
   app.listen(config.port, () => {

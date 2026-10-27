@@ -5,3 +5,4 @@ shared/keys/*
 !shared/keys/.gitkeep
 shared/certs/*
 !shared/certs/.gitkeep
+shared/metadata/*.xml
